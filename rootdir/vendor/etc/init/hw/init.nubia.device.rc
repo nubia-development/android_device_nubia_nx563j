@@ -47,7 +47,6 @@ on post-fs-data
     # NFC
     chmod 777 /dev/bcm2079x
     chown nfc nfc /dev/bcm2079x
-    mkdir /data/nfc 770 nfc nfc
     mkdir /data/vendor/nfc 770 nfc nfc
 
     # Wakeup gesture

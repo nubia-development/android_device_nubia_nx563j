@@ -115,6 +115,7 @@ PRODUCT_PACKAGES += \
 # Update this list with what each blob is actually for
 # libstdc++: camera.msm8998
 PRODUCT_PACKAGES += \
+    libhidlbase_shim \
     libstdc++_vendor
 
 # Wifi

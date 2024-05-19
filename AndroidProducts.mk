@@ -15,8 +15,3 @@
 
 PRODUCT_MAKEFILES := \
     $(LOCAL_DIR)/lineage_nx563j.mk
-
-COMMON_LUNCH_CHOICES := \
-    lineage_nx563j-user \
-    lineage_nx563j-userdebug \
-    lineage_nx563j-eng

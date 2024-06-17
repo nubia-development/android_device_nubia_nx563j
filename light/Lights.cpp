@@ -1,8 +1,8 @@
 #define LOG_TAG "LightService"
 
-#include <log/log.h>
+#include "Lights.h"
 
-#include "Light.h"
+#include <android-base/logging.h>
 
 #include <fstream>
 
@@ -30,14 +30,6 @@
 
 namespace {
 
-using ::android::hardware::Return;
-using ::android::hardware::Void;
-using ::android::hardware::light::V2_0::Flash;
-using ::android::hardware::light::V2_0::ILight;
-using ::android::hardware::light::V2_0::LightState;
-using ::android::hardware::light::V2_0::Status;
-using ::android::hardware::light::V2_0::Type;
-
 /*
  * Write value to path and close file.
  */
@@ -45,7 +37,7 @@ static void set(std::string path, std::string value) {
     std::ofstream file(path);
 
     if (!file.is_open()) {
-        ALOGW("failed to write %s to %s", value.c_str(), path.c_str());
+        LOG(WARNING) << "failed to write " << value.c_str() << " to " << path.c_str();
         return;
     }
 
@@ -61,11 +53,11 @@ static void set(std::string path, char *buffer) {
     set(path, str);
 }
 
-static inline bool isLit(const LightState& state) {
+static inline bool isLit(const HwLightState& state) {
     return state.color & 0x00ffffff;
 }
 
-static uint32_t getBrightness(const LightState& state) {
+static uint32_t getBrightness(const HwLightState& state) {
     uint32_t alpha, red, green, blue;
 
     /*
@@ -92,11 +84,11 @@ static inline uint32_t scaleBrightness(uint32_t brightness, uint32_t maxBrightne
     return brightness * maxBrightness / 0xFF;
 }
 
-static inline uint32_t getScaledBrightness(const LightState& state, uint32_t maxBrightness) {
+static inline uint32_t getScaledBrightness(const HwLightState& state, uint32_t maxBrightness) {
     return scaleBrightness(getBrightness(state), maxBrightness);
 }
 
-static void handleBacklight(const LightState& state) {
+static void handleBacklight(const HwLightState& state) {
     uint32_t brightness = getScaledBrightness(state, MAX_LCD_BRIGHTNESS);
     set(LCD_FILE, brightness);
 }
@@ -113,7 +105,7 @@ static int compareLedStatus(struct led_data *led1, struct led_data *led2)
     return true;
 }
 
-static void handleNubiaLed(const LightState& state, int source)
+static void handleNubiaLed(const HwLightState& state, int source)
 {
     uint32_t brightness = getBrightness(state);
     bool enable = brightness > 0;
@@ -124,29 +116,29 @@ static void handleNubiaLed(const LightState& state, int source)
     char fade[16];
 
     switch (state.flashMode) {
-        case Flash::HARDWARE:
+        case FlashMode::HARDWARE:
             led_param.blink_mode = enable ? BLINK_MODE_BREATH_AUTO : BLINK_MODE_OFF;
             led_param.fade_time = enable ? led_param.fade_time : -1;
             led_param.fade_on_time = enable ? led_param.fade_on_time : -1;
             led_param.fade_off_time = enable ? led_param.fade_off_time : -1;
             goto applyChanges;
-        case Flash::TIMED:
+        case FlashMode::TIMED:
             blink = state.flashOnMs > 0 && state.flashOffMs > 0;
             led_param.fade_time = 1;
             led_param.fade_on_time = state.flashOnMs / 400;
             led_param.fade_off_time = state.flashOffMs / 400;
             break;
-        case Flash::NONE:
+        case FlashMode::NONE:
         default:
             break;
     }
 
-    ALOGD("setting led %d: %08x, %d, %d", source,
-        state.color, state.flashOnMs, state.flashOffMs);
+    LOG(DEBUG) << "setting led " << source << ": "
+        << state.color << ", " << state.flashOnMs << ", " << state.flashOffMs;
 
     if (enable) {
         g_ongoing |= source;
-        ALOGD("ongoing +: %d = %d", source, g_ongoing);
+        LOG(DEBUG) << "ongoing +: " << source << " = " << g_ongoing;
 
         switch (source) {
             case ONGOING_BUTTONS:
@@ -183,7 +175,7 @@ static void handleNubiaLed(const LightState& state, int source)
         mLedDatas[source] = led_param;
     } else {
         g_ongoing &= ~source;
-        ALOGD("ongoing -: %d = %d", source, g_ongoing);
+        LOG(DEBUG) << "ongoing -: " << source << " = " << g_ongoing;
 
         // try to restore previous mode
         if (g_ongoing & ONGOING_BUTTONS) {
@@ -219,7 +211,7 @@ applyChanges:
     current_led_param = led_param;
 }
 
-static void handleButtons(const LightState& state) {
+static void handleButtons(const HwLightState& state) {
     buttonBrightness = getScaledBrightness(state, MAX_LED_BRIGHTNESS);
 
     set(LED_CHANNEL, LED_CHANNEL_BUTTON);
@@ -234,40 +226,39 @@ static void handleButtons(const LightState& state) {
     handleNubiaLed(state, ONGOING_BUTTONS);
 }
 
-static void handleNotification(const LightState& state) {
+static void handleNotification(const HwLightState& state) {
     notificationBrightness = getScaledBrightness(state, MAX_LED_BRIGHTNESS);
     handleNubiaLed(state, ONGOING_NOTIFICATION);
 }
 
-static void handleBattery(const LightState& state){
+static void handleBattery(const HwLightState& state){
     batteryBrightness = getScaledBrightness(state, MAX_LED_BRIGHTNESS);
     handleNubiaLed(state, ONGOING_BATTERY);
 }
 
-static void handleAttention(const LightState& state){
+static void handleAttention(const HwLightState& state){
     attentionBrightness = getScaledBrightness(state, MAX_LED_BRIGHTNESS);
     handleNubiaLed(state, ONGOING_ATTENTION);
 }
 /* Keep sorted in the order of importance. */
 static std::vector<LightBackend> backends = {
-    { Type::ATTENTION, handleAttention },
-    { Type::NOTIFICATIONS, handleNotification },
-    { Type::BATTERY, handleBattery },
-    { Type::BACKLIGHT, handleBacklight },
-    { Type::BUTTONS, handleButtons },
+    { LightType::ATTENTION, handleAttention },
+    { LightType::NOTIFICATIONS, handleNotification },
+    { LightType::BATTERY, handleBattery },
+    { LightType::BACKLIGHT, handleBacklight },
+    { LightType::BUTTONS, handleButtons },
 };
 
 }  // anonymous namespace
 
+namespace aidl {
 namespace android {
 namespace hardware {
 namespace light {
-namespace V2_0 {
-namespace implementation {
 
-Return<Status> Light::setLight(Type type, const LightState& state) {
-    LightStateHandler handler;
-    bool handled = false;
+ndk::ScopedAStatus Lights::setLightState(int id, const HwLightState& state) {
+    LightStateHandler handler = nullptr;
+    LightType type = static_cast<LightType>(id);
 
     /* Lock global mutex until light state is updated. */
     std::lock_guard<std::mutex> lock(globalLock);
@@ -282,40 +273,39 @@ Return<Status> Light::setLight(Type type, const LightState& state) {
 
     /* If no handler has been found, then the type is not supported. */
     if (!handler) {
-        return Status::LIGHT_NOT_SUPPORTED;
+        return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
     }
 
     /* Light up the type with the highest priority that matches the current handler. */
     for (LightBackend& backend : backends) {
         if (handler == backend.handler && isLit(backend.state)) {
             handler(backend.state);
-            handled = true;
-            break;
+            return ndk::ScopedAStatus::ok();
         }
     }
 
     /* If no type has been lit up, then turn off the hardware. */
-    if (!handled) {
-        handler(state);
-    }
+    handler(state);
 
-    return Status::SUCCESS;
+    return ndk::ScopedAStatus::ok();
 }
 
-Return<void> Light::getSupportedTypes(getSupportedTypes_cb _hidl_cb) {
-    std::vector<Type> types;
+ndk::ScopedAStatus Lights::getLights(std::vector<HwLight>* lights) {
+    int i = 0;
 
     for (const LightBackend& backend : backends) {
-        types.push_back(backend.type);
+        HwLight hwLight;
+        hwLight.id = (int) backend.type;
+        hwLight.type = backend.type;
+        hwLight.ordinal = i;
+        lights->push_back(hwLight);
+        i++;
     }
 
-    _hidl_cb(types);
-
-    return Void();
+    return ndk::ScopedAStatus::ok();
 }
 
-}  // namespace implementation
-}  // namespace V2_0
 }  // namespace light
 }  // namespace hardware
 }  // namespace android
+}  // namespace aidl
